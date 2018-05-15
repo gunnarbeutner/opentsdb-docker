@@ -1,31 +1,14 @@
-FROM janeczku/alpine-kubernetes:3.2
+FROM openjdk:8-jdk-stretch
+LABEL maintainer="Gunnar Beutner <gunnar@beutner.name>"
 
-RUN apk --update add \
-    rsyslog \
-    bash \
-    openjdk7 \
-    make \
-    wget \
-  && : adding gnuplot for graphing \
-  && apk add gnuplot \
-    --update-cache \
-    --repository http://dl-cdn.alpinelinux.org/alpine/edge/community/
-
-ENV TSDB_VERSION 2.3.0
-ENV HBASE_VERSION 1.1.3
-ENV JAVA_HOME /usr/lib/jvm/java-1.7-openjdk
-ENV PATH $PATH:/usr/lib/jvm/java-1.7-openjdk/bin/
+# Install OpenTSDB
+ENV TSDB_VERSION 2.4.0RC2
 
 RUN mkdir -p /opt/bin/
 
 RUN mkdir /opt/opentsdb/
 WORKDIR /opt/opentsdb/
-RUN apk --update add --virtual builddeps \
-    build-base \
-    autoconf \
-    automake \
-    git \
-    python \
+RUN apt-get update && apt-get install -y build-essential wget git autoconf automake python gnuplot \
   && : Install OpenTSDB and scripts \
   && wget --no-check-certificate \
     -O v${TSDB_VERSION}.zip \
@@ -34,31 +17,36 @@ RUN apk --update add --virtual builddeps \
   && rm v${TSDB_VERSION}.zip \
   && cd /opt/opentsdb/opentsdb-${TSDB_VERSION} \
   && echo "tsd.http.request.enable_chunked = true" >> src/opentsdb.conf \
-  && echo "tsd.http.request.max_chunk = 1000000" >> src/opentsdb.conf \
+  && echo "tsd.http.request.max_chunk = 16777216" >> src/opentsdb.conf \
+  && cp src/opentsdb.conf /etc/ \
+  && cp src/create_table.sh /usr/local/bin/tsdb-create-table \
   && ./build.sh \
-  && : because of issue https://github.com/OpenTSDB/opentsdb/issues/707 \
-  && : commented lines do not work. These can be uncommeted when version of \
-  && : tsdb is bumped. Entrypoint will have to be updated too. \
-  && : cd build \
-  && : make install \
-  && : cd / \
-  && : rm -rf /opt/opentsdb/opentsdb-${TSDB_VERSION} \
-  && apk del builddeps \
-  && rm -rf /var/cache/apk/*
+  && cd build \
+  && make install \
+  && cd / \
+  && rm -rf /opt/opentsdb \
+  && apt-get purge -y build-essential git autoconf automake \
+  && apt-get autoremove -y \
+  && apt-get clean \
+  && rm -rf /var/cache/apt/*
 
 #Install HBase and scripts
-RUN mkdir -p /data/hbase /root/.profile.d /opt/downloads
+ENV HBASE_VERSION 1.4.4
 
-WORKDIR /opt/downloads
-RUN wget -O hbase-${HBASE_VERSION}.bin.tar.gz http://archive.apache.org/dist/hbase/${HBASE_VERSION}/hbase-${HBASE_VERSION}-bin.tar.gz && \
+RUN mkdir -p /data/hbase /root/.profile.d
+
+RUN mkdir /opt/downloads && \
+    cd /opt/downloads && \
+    wget -O hbase-${HBASE_VERSION}.bin.tar.gz http://archive.apache.org/dist/hbase/${HBASE_VERSION}/hbase-${HBASE_VERSION}-bin.tar.gz && \
     tar xzvf hbase-${HBASE_VERSION}.bin.tar.gz && \
     mv hbase-${HBASE_VERSION} /opt/hbase && \
-    rm hbase-${HBASE_VERSION}.bin.tar.gz
+    rm -rf /opt/downloads
 
 ADD docker/hbase-site.xml /opt/hbase/conf/
 ADD docker/start_opentsdb.sh /opt/bin/
 ADD docker/create_tsdb_tables.sh /opt/bin/
 ADD docker/start_hbase.sh /opt/bin/
+ADD docker/entrypoint.sh /opt/bin/
 
 RUN for i in /opt/bin/start_hbase.sh /opt/bin/start_opentsdb.sh /opt/bin/create_tsdb_tables.sh; \
     do \
@@ -73,3 +61,5 @@ RUN ln -s /opt/bin/start_opentsdb.sh /etc/services.d/tsdb/run
 EXPOSE 60000 60010 60030 4242 16010
 
 VOLUME ["/data/hbase", "/tmp"]
+
+CMD ["/opt/bin/entrypoint.sh"]
